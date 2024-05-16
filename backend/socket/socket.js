@@ -16,93 +16,65 @@ const io = new Server(server, {
     },
 });
 
+const getRecipientSocketId = (recipientId) => {
+    return userSocketMap[recipientId];
+};
 
-let onlineUsers = []; // Array to store online users
+const userSocketMap = {}; // formate =>  userId: socketId
+
+
 
 io.on("connection", (socket) => {
+
+    console.log("user connected", socket.id);
     const userId = socket.handshake.query.userId;
 
-    // Check if the user is already in the onlineUsers array
-    const userExists = onlineUsers.some(user => user.userId === userId);
-    if (!userExists) {
-        // If the user is not already in the array, add them
-        onlineUsers = [...onlineUsers, { userId, socketId: socket.id }]
-        // Send online users array to the frontend
-        io.emit("getOnlineUsers", onlineUsers);
-    }
+    if (userId != "undefined") userSocketMap[userId] = socket.id;
+    io.emit("getOnlineUsers", Object.keys(userSocketMap));
 
-
-
-    // Listen for sending messages
-    socket.on("sendMessage", async ({ senderId, receiverId, message }) => {
-
-        const messageForRealTime = {
-            message,
-            _id: uuid(),
-            senderId,
-            receiverId,
-            createdAt: new Date().toISOString(),
-        };
-
-
-        // Find the socket ID of the recipient and sender user
-        const recipientSocket = onlineUsers.find(user => user.userId === receiverId);
-        const senderSocketId = onlineUsers.find(user => user.userId === senderId);
-        if (recipientSocket) {
-            // If the recipient is online, send the message directly to their socket
-            io.to(recipientSocket.socketId).emit("receiveMessage", messageForRealTime);
-        } else {
-            // Handle the case where the recipient is offline or not found
-            console.log("user is offline")
-        }
-
-        // Emit the message to the sender as well to display it instantly on their end
-        // Putting the emission of the message to the sender outside of the if...else block ensures that the sender always receives the message in real-time, regardless of whether the recipient is online or offline.
-        io.to(senderSocketId.socketId).emit("receiveMessage", messageForRealTime);
-
-        // saving in database
+    socket.on("markMessagesAsSeen", async ({ conversationId, userToChat }) => {
         try {
-            let conversation = await Conversation.findOne({
-                participants: { $all: [senderId, receiverId] },
-            });
+            // find conversation having id, whose seen:false and set seen:true
+            await Message.updateMany({ conversationId: conversationId, seen: false }, { $set: { seen: true } });
+            // await Conversation.updateOne({ _id: conversationId }, { $set: { "lastMessage.seen": true } });
+            io.to(userSocketMap[userToChat]).emit("messagesSeen", { conversationId });
+        } catch (error) {
+            console.log(error);
+        }  
+    }); 
 
-            if (!conversation) {
-                conversation = await Conversation.create({
-                    participants: [senderId, receiverId],
-                });
-            }
-
-            const newMessage = new Message({
-                senderId,
-                receiverId,
-                message,
-            });
-
-            if (newMessage) {
-                conversation.messages.push(newMessage._id);
-            }
-
-
-            // await conversation.save();
-            // await newMessage.save();
-
-            // this will run in parallel
-            await Promise.all([conversation.save(), newMessage.save()]);
+    socket.on("markAsSeenSelfMessages", async ({ conversationId, userId }) => {
+        try {
+            // find conversation having id, and update it,  set seen:true
+            await Conversation.updateOne({ _id: conversationId }, { $set: { "lastMessage.seen": true } });
+            // io.to(userSocketMap[userId]).emit("SelfMessagesSeen", { conversationId });
+        } catch (error) {
+            console.log(error);
+        }  
+    }); 
 
 
+    // listen to markAsRead event
+    socket.on("markAsSeen", async ({ conversationId, userId }) => {
+        try {
+
+            await Conversation.updateOne({ _id: conversationId }, { $set: { "lastMessage.seen": true } });
+            
+            // Emit an event to notify frontend that messages are marked as read
+            io.to(userSocketMap[userId]).emit("messagesSeen", { conversationId });
 
         } catch (error) {
-            console.log("error while message saving")
+            console.log("error while mark message as read", error)
         }
-    });
+
+    })
 
     // socket.on() is used to listen to the events. can be used both on client and server side
     socket.on("disconnect", () => {
-        // Remove the disconnected user from onlineUsers array
-        onlineUsers = onlineUsers.filter(user => user.socketId !== socket.id);
-        // Send updated online users array to the frontend
-        io.emit("getOnlineUsers", onlineUsers);
+        console.log("user disconnected");
+        delete userSocketMap[userId];
+        io.emit("getOnlineUsers", Object.keys(userSocketMap));
     });
 });
 
-module.exports = { app, server }
+module.exports = { app, server, io, getRecipientSocketId }

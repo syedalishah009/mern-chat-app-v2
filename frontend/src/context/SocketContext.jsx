@@ -38,6 +38,8 @@ export const SocketContextProvider = ({ children }) => {
           }
         });
       });
+
+     
     } else {
       if (socket) {
         socket.close();

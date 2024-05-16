@@ -3,21 +3,19 @@ const mongoose = require("mongoose");
 
 const messageSchema = new mongoose.Schema(
     {
-        senderId: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
-            required: true
-        },
-        receiverId: {
-            type: mongoose.Schema.Types.ObjectId,
-            ref: "User",
-            required: true
-        },
-        message: {
-            type: String,
-        },
-    },
-    { timestamps: true }
+        conversationId: { type: mongoose.Schema.Types.ObjectId, ref: "Conversation" },
+		sender: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+		text: String,
+		seen: {
+			type: Boolean,
+			default: false,
+		},
+		img: {
+			type: String,
+			default: "",
+		},
+	},
+	{ timestamps: true }
 );
 
 

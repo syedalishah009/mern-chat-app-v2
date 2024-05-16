@@ -1,146 +1,103 @@
 const Conversation = require("../models/conversationModel.js")
-const Message = require("../models/messageModel.js")
+const Message = require("../models/messageModel.js");
+const { getRecipientSocketId, io } = require("../socket/socket.js");
 
 // send message
-const sendMessage = async (req, res, next) => {
+const sendMessage = async (req, res) => {
     try {
         const { message } = req.body;
-        const { id: receiverId } = req.params;
+        const { id: recipientId } = req.params
         const senderId = req.user.id; //  we set this in verifyToken function in authentication.js file
 
-
         let conversation = await Conversation.findOne({
-            participants: { $all: [senderId, receiverId] },
+            participants: { $all: [senderId, recipientId] },
         });
 
         if (!conversation) {
-            conversation = await Conversation.create({
-                participants: [senderId, receiverId],
+            conversation = new Conversation({
+                participants: [senderId, recipientId],
+                lastMessage: {
+                    text: message,
+                    sender: senderId,
+                },
             });
+            await conversation.save();
         }
 
         const newMessage = new Message({
-            senderId,
-            receiverId,
-            message,
+            conversationId: conversation._id,
+            sender: senderId,
+            text: message,
         });
 
-        if (newMessage) {
-            conversation.messages.push(newMessage._id);
+
+        await Promise.all([
+            newMessage.save(),
+            conversation.updateOne({
+                lastMessage: {
+                    text: message,
+                    sender: senderId,
+                    seen: false
+                },
+            }),
+        ]);
+
+        const recipientSocketId = getRecipientSocketId(recipientId);
+        if (recipientSocketId) {
+        	io.to(recipientSocketId).emit("newMessage", newMessage);
         }
-
-
-        // await conversation.save();
-        // await newMessage.save();
-
-        // this will run in parallel
-        await Promise.all([conversation.save(), newMessage.save()]);
-
-        res.status(201).json({
-            success: true,
-            newMessage,
-        });
-    } catch (err) {
-        res.status(500).json({ message: "Internal server error" });
+ 
+        res.status(201).json(newMessage);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 };
-// export const readAllMessage = async (req, res) => {
-//   const messages = await Message.updateMany({ read: false, senderId: req.body.id }, { $set: { read: true } })
 
-//   return res.json(messages)
-
-// }
 
 // get user all conversation list
-const getConversations = async (req, res, next) => {
+const getConversations = async (req, res) => {
+    const userId = req.user.id;
     try {
-        const senderId = req.user.id; //  we set this in verifyToken function in authentication.js file
-
-        const conversations = await Conversation.find({
-            participants: { $elemMatch: { $eq: senderId } },
-        }).populate({ path: "participants", select: "firstName email profilePic" });
-
-        if (!conversations) {
-            res.status(201).json("conversation not exist");
-        }
-
-
-        const participants = conversations.flatMap(conversation => {
-            // Filter out the participant whose ID is not equal to senderId
-            return conversation.participants.filter(participant => participant._id.toString() !== senderId);
+        const conversations = await Conversation.find({ participants: userId }).populate({
+            path: "participants",
+            select: "name profilePic",
         });
-
-
-        res.status(201).json({
-            success: true,
-            participants,
+        // remove the current user from the participants array
+        conversations.forEach((conversation) => {
+            conversation.participants = conversation.participants.filter(
+                (participant) => participant._id.toString() !== userId.toString()
+            );
         });
-    } catch (err) {
-        res.status(500).json({ message: "Internal server error" });
+        res.status(200).json(conversations);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 };
+
+
 
 // get user messages with other single user
 const getMessages = async (req, res) => {
-    const { id: userToChatId } = req.params;
-    const senderId = req.user.id; //  we set this in verifyToken function in authentication.js file
-
+    const { id: otherUserId } = req.params;
+    const userId = req.user.id;
     try {
-        const messages = await Conversation.find({
-            participants: { $all: [senderId, userToChatId] },
-        }).populate("messages");
+        const conversation = await Conversation.findOne({
+            participants: { $all: [userId, otherUserId] },
+        });
 
-        if (!messages || messages.length === 0) {
-            return res.status(201).json({ success: false, message: "No messages found" });
+        if (!conversation) {
+            return res.status(404).json({ error: "Conversation not found" });
         }
 
+        const messages = await Message.find({
+            conversationId: conversation._id,
+        }).sort({ createdAt: 1 });
 
-        res.status(201).json({
-            success: true,
-            ...messages,
-        });
-    } catch (err) {
-        res.status(500).json({ message: "Internal server error" });
+        res.status(200).json(messages);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
     }
 };
 
-// Get messages with files
-//  const getMessagesWithFile = async (req, res, next) => {
-//     const { id: userToChatId } = req.params;
-//     const senderId = req.user.id;
-
-//     try {
-//         const conversation = await Conversation.findOne({
-//             participants: { $all: [senderId, userToChatId] }
-//         }).populate("messages");
-
-//         if (!conversation || !conversation.messages || conversation.messages.length === 0) {
-//             return res.status(200).json({
-//                 success: true,
-//                 data: [],
-//                 message: "No conversation found."
-//             });
-//         }
-
-//         // Filter messages with the "file" field
-//         const messagesWithFiles = conversation.messages.filter(message =>
-//             message.file !== undefined
-//         );
-//         if (messagesWithFiles.length === 0) {
-//             return res.status(200).json({
-//                 success: true,
-//                 data: [],
-//                 message: "No files found in the conversation."
-//             });
-//         }
-
-//         res.status(200).json({
-//             success: true,
-//             data: messagesWithFiles
-//         });
-//     } catch (err) {
-//         res.status(500).json({ message: "Internal server error" });
-//     }
-// };
 
 module.exports = { sendMessage, getMessages, getConversations };
